@@ -83,7 +83,7 @@ func Confirm(w io.Writer, r io.Reader, target Target, bytes int64, items int) bo
 	return response == "y" || response == "Y" || response == "yes"
 }
 
-func Nuke(target Target) (int64, error) {
+func Nuke(target Target, onProgress func(current, total int)) (int64, error) {
 	path := ExpandHome(target.Path)
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -91,7 +91,7 @@ func Nuke(target Target) (int64, error) {
 	}
 
 	var freed int64
-	for _, entry := range entries {
+	for i, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
 		if entry.IsDir() {
 			s, _ := dirSize(entryPath)
@@ -101,6 +101,9 @@ func Nuke(target Target) (int64, error) {
 			info, _ := entry.Info()
 			freed += info.Size()
 			os.Remove(entryPath)
+		}
+		if onProgress != nil {
+			onProgress(i+1, len(entries))
 		}
 	}
 
@@ -134,7 +137,11 @@ func Run(w io.Writer, r io.Reader, target Target, yes bool, dryRun bool) error {
 		}
 	}
 
-	freed, err := Nuke(target)
+	bar := NewProgressBar(w, items)
+	freed, err := Nuke(target, func(current, total int) {
+		bar.Update(current)
+	})
+	bar.Done()
 	if err != nil {
 		return err
 	}

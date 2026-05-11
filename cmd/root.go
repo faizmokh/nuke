@@ -83,7 +83,17 @@ func runAll() error {
 	}
 
 	for _, t := range targets {
-		freed, err := internal.Nuke(t)
+		_, items, err := internal.Scan(t)
+		if err != nil {
+			fmt.Fprintf(rootCmd.OutOrStdout(), "%s: %v\n", t.Name, err)
+			continue
+		}
+
+		bar := internal.NewProgressBar(rootCmd.OutOrStdout(), items)
+		freed, err := internal.Nuke(t, func(current, total int) {
+			bar.Update(current)
+		})
+		bar.Done()
 		if err != nil {
 			fmt.Fprintf(rootCmd.OutOrStdout(), "%s: %v\n", t.Name, err)
 			continue

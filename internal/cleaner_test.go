@@ -60,7 +60,7 @@ func TestNuke(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "top.txt"), []byte("top"), 0644)
 
 	target := Target{Name: "test", Path: dir}
-	freed, err := Nuke(target)
+	freed, err := Nuke(target, nil)
 	if err != nil {
 		t.Fatalf("Nuke() error: %v", err)
 	}
