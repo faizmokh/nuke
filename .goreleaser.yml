@@ -1,0 +1,44 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: nuke
+    ldflags:
+      - -s -w -X cmd.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+brews:
+  - name: nuke
+    repository:
+      owner: faizmokh
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/faizmokh/nuke"
+    description: "Clean up Xcode DerivedData and Swift Package Manager caches"
+    test: |
+      system "#{bin}/nuke", "--version"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
