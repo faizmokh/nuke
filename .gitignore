@@ -1,0 +1,23 @@
+# Binaries
+nuke
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# OS files
+.DS_Store
