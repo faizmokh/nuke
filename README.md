@@ -1,6 +1,6 @@
 # nuke
 
-A Go CLI for cleaning Xcode DerivedData and Swift Package Manager caches on macOS.
+A Go CLI for cleaning Xcode and iOS development caches on macOS.
 
 ## Install
 
@@ -21,7 +21,11 @@ go install github.com/faizmokh/nuke@latest
 ```bash
 nuke derived    # Interactively clean ~/Library/Developer/Xcode/DerivedData
 nuke spm        # Clean ~/Library/Caches/org.swift.swiftpm
-nuke all        # Clean both
+nuke archives   # Clean ~/Library/Developer/Xcode/Archives
+nuke device-support # Clean ~/Library/Developer/Xcode/iOS DeviceSupport
+nuke module-cache # Clean ~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex
+nuke simulators # Clean unavailable CoreSimulator devices
+nuke all        # Clean DerivedData and SwiftPM caches
 ```
 
 ### Flags
@@ -50,6 +54,10 @@ nuke derived --yes            # Delete all DerivedData immediately
 nuke derived --project 'My.*' # Delete only matching projects
 nuke derived --older-than 30d # Delete only older DerivedData entries
 nuke derived --list           # List current DerivedData entries
+nuke archives --dry-run       # Preview reclaimable Xcode archive space
+nuke device-support --yes     # Delete cached device support files immediately
+nuke module-cache             # Clean the Xcode module cache
+nuke simulators --dry-run     # Preview unavailable simulators before deleting them
 nuke all --dry-run    # Preview what would be deleted
 ```
 

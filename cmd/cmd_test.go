@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/faizmokh/nuke/internal"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +37,10 @@ func resetCommandFlags() {
 	derivedInteractiveFlag = false
 	resetHelpFlag(rootCmd)
 	resetHelpFlag(derivedCmd)
+	resetHelpFlag(archivesCmd)
+	resetHelpFlag(deviceSupportCmd)
+	resetHelpFlag(moduleCacheCmd)
+	resetHelpFlag(simulatorsCmd)
 	resetHelpFlag(spmCmd)
 	resetHelpFlag(allCmd)
 }
@@ -72,6 +78,34 @@ func TestSPMCommandRegistered(t *testing.T) {
 	}
 }
 
+func TestArchivesCommandRegistered(t *testing.T) {
+	_, _, err := rootCmd.Find([]string{"archives"})
+	if err != nil {
+		t.Error("archives subcommand not registered")
+	}
+}
+
+func TestDeviceSupportCommandRegistered(t *testing.T) {
+	_, _, err := rootCmd.Find([]string{"device-support"})
+	if err != nil {
+		t.Error("device-support subcommand not registered")
+	}
+}
+
+func TestModuleCacheCommandRegistered(t *testing.T) {
+	_, _, err := rootCmd.Find([]string{"module-cache"})
+	if err != nil {
+		t.Error("module-cache subcommand not registered")
+	}
+}
+
+func TestSimulatorsCommandRegistered(t *testing.T) {
+	_, _, err := rootCmd.Find([]string{"simulators"})
+	if err != nil {
+		t.Error("simulators subcommand not registered")
+	}
+}
+
 func TestAllCommandRegistered(t *testing.T) {
 	_, _, err := rootCmd.Find([]string{"all"})
 	if err != nil {
@@ -91,6 +125,21 @@ func TestDerivedHelp(t *testing.T) {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help output = %q, want to contain %q", output, flag)
 		}
+	}
+}
+
+func TestRootHelpListsExpandedCleanupTargets(t *testing.T) {
+	output, err := executeCommand(rootCmd, "--help")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"archives", "device-support", "module-cache"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output = %q, want to contain %q", output, want)
+		}
+	}
+	if !strings.Contains(output, "Xcode and iOS development caches") {
+		t.Fatalf("help output = %q, want expanded root description", output)
 	}
 }
 
@@ -162,6 +211,239 @@ func TestSPMHelp(t *testing.T) {
 	}
 	if !strings.Contains(output, "Package") {
 		t.Errorf("help output = %q, want to contain 'SPM'", output)
+	}
+}
+
+func TestArchivesHelp(t *testing.T) {
+	output, err := executeCommand(rootCmd, "archives", "--help")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "Archives") {
+		t.Errorf("help output = %q, want to contain 'Archives'", output)
+	}
+}
+
+func TestDeviceSupportHelp(t *testing.T) {
+	output, err := executeCommand(rootCmd, "device-support", "--help")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "DeviceSupport") {
+		t.Errorf("help output = %q, want to contain 'DeviceSupport'", output)
+	}
+}
+
+func TestModuleCacheHelp(t *testing.T) {
+	output, err := executeCommand(rootCmd, "module-cache", "--help")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "module cache") {
+		t.Errorf("help output = %q, want to contain 'module cache'", output)
+	}
+}
+
+func TestSimulatorsHelp(t *testing.T) {
+	output, err := executeCommand(rootCmd, "simulators", "--help")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "unavailable simulators") {
+		t.Errorf("help output = %q, want to contain 'unavailable simulators'", output)
+	}
+}
+
+func TestArchivesCommandSkipConfirm(t *testing.T) {
+	originalTarget := ArchivesTarget
+	defer func() {
+		ArchivesTarget = originalTarget
+	}()
+
+	dir := t.TempDir()
+	ArchivesTarget.Path = dir
+	if err := os.MkdirAll(filepath.Join(dir, "2026-05-16"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "2026-05-16", "app.xcarchive"), []byte("archive"), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err := executeCommand(rootCmd, "archives", "--yes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("archives target left %d entries, want 0", len(entries))
+	}
+}
+
+func TestDeviceSupportCommandSkipConfirm(t *testing.T) {
+	originalTarget := DeviceSupportTarget
+	defer func() {
+		DeviceSupportTarget = originalTarget
+	}()
+
+	dir := t.TempDir()
+	DeviceSupportTarget.Path = dir
+	if err := os.MkdirAll(filepath.Join(dir, "17.5 (21F79)"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "17.5 (21F79)", "Symbols"), []byte("symbols"), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err := executeCommand(rootCmd, "device-support", "--yes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("device-support target left %d entries, want 0", len(entries))
+	}
+}
+
+func TestModuleCacheCommandSkipConfirm(t *testing.T) {
+	originalTarget := ModuleCacheTarget
+	defer func() {
+		ModuleCacheTarget = originalTarget
+	}()
+
+	dir := t.TempDir()
+	ModuleCacheTarget.Path = dir
+	if err := os.MkdirAll(filepath.Join(dir, "ABC123"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ABC123", "UIKit.pcm"), []byte("pcm"), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	_, err := executeCommand(rootCmd, "module-cache", "--yes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("module-cache target left %d entries, want 0", len(entries))
+	}
+}
+
+func TestSimulatorsCommandDryRun(t *testing.T) {
+	originalList := listUnavailableSimulators
+	originalDelete := deleteUnavailableSimulators
+	defer func() {
+		listUnavailableSimulators = originalList
+		deleteUnavailableSimulators = originalDelete
+	}()
+
+	deleteCalled := false
+	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+		return []internal.SimulatorDevice{
+			{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"},
+			{Name: "iPad Pro", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-16-4", UDID: "DEF"},
+		}, nil
+	}
+	deleteUnavailableSimulators = func() error {
+		deleteCalled = true
+		return nil
+	}
+
+	output, err := executeCommand(rootCmd, "simulators", "--dry-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"iPhone 8", "iPad Pro", "2 unavailable simulators"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output = %q, want to contain %q", output, want)
+		}
+	}
+	if deleteCalled {
+		t.Fatal("dry run should not delete simulators")
+	}
+}
+
+func TestSimulatorsCommandSkipConfirm(t *testing.T) {
+	originalList := listUnavailableSimulators
+	originalDelete := deleteUnavailableSimulators
+	defer func() {
+		listUnavailableSimulators = originalList
+		deleteUnavailableSimulators = originalDelete
+	}()
+
+	deleteCalled := false
+	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+		return []internal.SimulatorDevice{{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"}}, nil
+	}
+	deleteUnavailableSimulators = func() error {
+		deleteCalled = true
+		return nil
+	}
+
+	output, err := executeCommand(rootCmd, "simulators", "--yes")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !deleteCalled {
+		t.Fatal("expected deleteUnavailableSimulators to be called")
+	}
+	if !strings.Contains(output, "Deleted 1 unavailable simulator") {
+		t.Fatalf("output = %q, want deletion confirmation", output)
+	}
+}
+
+func TestSimulatorsCommandListError(t *testing.T) {
+	originalList := listUnavailableSimulators
+	defer func() {
+		listUnavailableSimulators = originalList
+	}()
+
+	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+		return nil, errors.New("simctl exploded")
+	}
+
+	_, err := executeCommand(rootCmd, "simulators")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "listing unavailable simulators") {
+		t.Fatalf("error = %q, want list context", err)
+	}
+}
+
+func TestSimulatorsCommandDeleteError(t *testing.T) {
+	originalList := listUnavailableSimulators
+	originalDelete := deleteUnavailableSimulators
+	defer func() {
+		listUnavailableSimulators = originalList
+		deleteUnavailableSimulators = originalDelete
+	}()
+
+	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+		return []internal.SimulatorDevice{{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"}}, nil
+	}
+	deleteUnavailableSimulators = func() error {
+		return errors.New("permission denied")
+	}
+
+	_, err := executeCommand(rootCmd, "simulators", "--yes")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "deleting unavailable simulators") {
+		t.Fatalf("error = %q, want delete context", err)
 	}
 }
 

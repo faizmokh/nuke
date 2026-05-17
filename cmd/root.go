@@ -24,9 +24,24 @@ var SPMTarget = internal.Target{
 	Path: "~/Library/Caches/org.swift.swiftpm",
 }
 
+var ArchivesTarget = internal.Target{
+	Name: "Xcode Archives",
+	Path: "~/Library/Developer/Xcode/Archives",
+}
+
+var DeviceSupportTarget = internal.Target{
+	Name: "iOS DeviceSupport",
+	Path: "~/Library/Developer/Xcode/iOS DeviceSupport",
+}
+
+var ModuleCacheTarget = internal.Target{
+	Name: "Xcode module cache",
+	Path: "~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex",
+}
+
 var rootCmd = &cobra.Command{
 	Use:     "nuke",
-	Short:   "Clean up Xcode DerivedData and SPM caches",
+	Short:   "Clean up Xcode and iOS development caches",
 	Version: Version,
 }
 
