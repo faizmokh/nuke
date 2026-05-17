@@ -30,7 +30,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/faizmokh/nuke"
-    description: "Clean up Xcode DerivedData and Swift Package Manager caches"
+    description: "Clean up Xcode and iOS development caches"
     test: |
       system "#{bin}/nuke", "--version"
 
