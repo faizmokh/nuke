@@ -2,6 +2,8 @@
 
 A Go CLI for cleaning Xcode and iOS development caches on macOS.
 
+Interactive terminal sessions use an enhanced inline UI for selection, summaries, and progress where it helps, while non-interactive runs keep plain text output suitable for scripts.
+
 ## Install
 
 **Homebrew:**
@@ -50,6 +52,7 @@ nuke all        # Clean DerivedData and SwiftPM caches
 
 ```bash
 nuke derived                  # Choose specific DerivedData entries interactively
+nuke derived --interactive    # Force the inline interactive picker
 nuke derived --yes            # Delete all DerivedData immediately
 nuke derived --project 'My.*' # Delete only matching projects
 nuke derived --older-than 30d # Delete only older DerivedData entries
@@ -60,6 +63,12 @@ nuke module-cache             # Clean the Xcode module cache
 nuke simulators --dry-run     # Preview unavailable simulators before deleting them
 nuke all --dry-run    # Preview what would be deleted
 ```
+
+### Interactive UX
+
+- `nuke derived` renders immediately in interactive terminals and fills in DerivedData sizes as scanning completes.
+- Styled summaries and confirmations are shown only when stdin and stdout are attached to a terminal.
+- Piped or scripted usage keeps plain text output.
 
 ## Build
 
