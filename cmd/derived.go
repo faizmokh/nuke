@@ -2,12 +2,18 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/faizmokh/nuke/internal"
+	"github.com/faizmokh/nuke/internal/tui"
 	"github.com/spf13/cobra"
 )
+
+var isInteractiveTerminal = tui.IsInteractiveTerminal
+var runDerivedPicker = tui.RunDerivedPicker
 
 var (
 	derivedAllFlag         bool
@@ -39,6 +45,52 @@ func runDerived() error {
 	out := rootCmd.OutOrStdout()
 	in := rootCmd.InOrStdin()
 	reader := bufio.NewReader(in)
+	interactiveDefault := !yesFlag && !derivedAllFlag && !derivedInteractiveFlag && derivedProjectFlag == "" && derivedOlderThanFlag == ""
+	shouldUsePicker := isInteractiveTerminal(in, out) && !dryRunFlag && !derivedListFlag && !yesFlag && (derivedInteractiveFlag || interactiveDefault)
+	if shouldUsePicker {
+		entries, err := os.ReadDir(internal.ExpandHome(DerivedTarget.Path))
+		if err != nil {
+			return fmt.Errorf("scanning %s: %w", DerivedTarget.Name, err)
+		}
+		if len(entries) == 0 {
+			fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
+			return nil
+		}
+
+		selected, err := runDerivedPicker(out, in, DerivedTarget, derivedProjectFlag, derivedOlderThanFlag)
+		if err != nil {
+			if errors.Is(err, tui.ErrNoEntries) {
+				fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
+				return nil
+			}
+			return err
+		}
+		if len(selected) == 0 {
+			fmt.Fprintln(out, "No items selected.")
+			return nil
+		}
+
+		bytes, items := internal.EntriesSummary(selected)
+		fmt.Fprintf(out, "%s: %s in %d items\n", DerivedTarget.Name, internal.HumanSize(bytes), items)
+		fmt.Fprintf(out, "Nuke %s? [y/N] ", internal.HumanSize(bytes))
+		response, _ := reader.ReadString('\n')
+		response = strings.TrimSpace(response)
+		if response != "y" && response != "Y" && response != "yes" {
+			return nil
+		}
+
+		bar := internal.NewProgressBar(out, items)
+		freed, err := internal.NukeEntries(selected, func(current, total int) {
+			bar.Update(current)
+		})
+		bar.Done()
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(out, "Nuked %s from %s\n", internal.HumanSize(freed), DerivedTarget.Name)
+		return nil
+	}
 
 	entries, err := internal.ScanDerived(DerivedTarget)
 	if err != nil {
@@ -69,7 +121,6 @@ func runDerived() error {
 		return nil
 	}
 
-	interactiveDefault := !yesFlag && !derivedAllFlag && !derivedInteractiveFlag && derivedProjectFlag == "" && derivedOlderThanFlag == ""
 	if derivedInteractiveFlag || interactiveDefault {
 		entries, err = internal.InteractiveSelect(out, reader, entries)
 		if err != nil {
