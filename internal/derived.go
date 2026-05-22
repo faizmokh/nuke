@@ -20,38 +20,43 @@ type DerivedEntry struct {
 	LastActivity time.Time
 }
 
+type DerivedScanUpdate struct {
+	Index    int
+	Entry    DerivedEntry
+	Done     int
+	Total    int
+	Complete bool
+}
+
 func ScanDerived(target Target) ([]DerivedEntry, error) {
+	var entries []DerivedEntry
+	err := ScanDerivedProgressively(target, func(update DerivedScanUpdate) {
+		if !update.Complete {
+			return
+		}
+		entries = append(entries, update.Entry)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func ScanDerivedProgressively(target Target, onUpdate func(DerivedScanUpdate)) error {
 	path := ExpandHome(target.Path)
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", target.Name, err)
+		return fmt.Errorf("scanning %s: %w", target.Name, err)
 	}
 
 	derived := make([]DerivedEntry, 0, len(entries))
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
 
 		item := DerivedEntry{
 			Name: entry.Name(),
 			Path: entryPath,
 		}
-
-		if entry.IsDir() {
-			size, latest, err := dirStats(entryPath)
-			if err != nil {
-				continue
-			}
-			item.Size = size
-			item.LastActivity = latest
-		} else {
-			item.Size = info.Size()
-			item.LastActivity = info.ModTime()
-		}
-
 		derived = append(derived, item)
 	}
 
@@ -59,7 +64,38 @@ func ScanDerived(target Target) ([]DerivedEntry, error) {
 		return derived[i].Name < derived[j].Name
 	})
 
-	return derived, nil
+	for i, item := range derived {
+		if onUpdate != nil {
+			onUpdate(DerivedScanUpdate{Index: i, Entry: item, Total: len(derived)})
+		}
+	}
+
+	for i := range derived {
+		entry := derived[i]
+		info, err := os.Stat(entry.Path)
+		if err != nil {
+			continue
+		}
+
+		if info.IsDir() {
+			size, latest, err := dirStats(entry.Path)
+			if err != nil {
+				continue
+			}
+			entry.Size = size
+			entry.LastActivity = latest
+		} else {
+			entry.Size = info.Size()
+			entry.LastActivity = info.ModTime()
+		}
+
+		derived[i] = entry
+		if onUpdate != nil {
+			onUpdate(DerivedScanUpdate{Index: i, Entry: entry, Done: i + 1, Total: len(derived), Complete: true})
+		}
+	}
+
+	return nil
 }
 
 func dirStats(path string) (int64, time.Time, error) {

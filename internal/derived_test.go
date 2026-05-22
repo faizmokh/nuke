@@ -64,6 +64,72 @@ func TestScanDerivedEmpty(t *testing.T) {
 	}
 }
 
+func TestScanDerivedProgressive(t *testing.T) {
+	dir := t.TempDir()
+	target := Target{Name: "derived", Path: dir}
+
+	projectA := filepath.Join(dir, "MyApp-abc123")
+	projectB := filepath.Join(dir, "OtherApp-def456")
+	if err := os.MkdirAll(projectA, 0755); err != nil {
+		t.Fatalf("MkdirAll(projectA) error: %v", err)
+	}
+	if err := os.MkdirAll(projectB, 0755); err != nil {
+		t.Fatalf("MkdirAll(projectB) error: %v", err)
+	}
+
+	older := time.Date(2025, time.January, 10, 12, 0, 0, 0, time.UTC)
+	newer := older.Add(24 * time.Hour)
+	writeTestFileWithTime(t, filepath.Join(projectA, "main.txt"), "hello", newer)
+	writeTestFileWithTime(t, filepath.Join(projectB, "main.txt"), "swift", older)
+
+	var updates []DerivedScanUpdate
+	err := ScanDerivedProgressively(target, func(update DerivedScanUpdate) {
+		updates = append(updates, update)
+	})
+	if err != nil {
+		t.Fatalf("ScanDerivedProgressively() error: %v", err)
+	}
+	if len(updates) != 4 {
+		t.Fatalf("len(updates) = %d, want 4", len(updates))
+	}
+
+	for i, want := range []string{"MyApp-abc123", "OtherApp-def456"} {
+		if updates[i].Entry.Name != want {
+			t.Fatalf("updates[%d].Entry.Name = %q, want %q", i, updates[i].Entry.Name, want)
+		}
+		if updates[i].Complete {
+			t.Fatalf("updates[%d].Complete = true, want false for initial placeholder", i)
+		}
+		if updates[i].Total != 2 {
+			t.Fatalf("updates[%d].Total = %d, want 2", i, updates[i].Total)
+		}
+	}
+
+	if !updates[2].Complete || !updates[3].Complete {
+		t.Fatal("expected final updates to mark completed entry stats")
+	}
+	if updates[2].Done != 1 || updates[3].Done != 2 {
+		t.Fatalf("completion progress = [%d %d], want [1 2]", updates[2].Done, updates[3].Done)
+	}
+
+	finalEntries, err := ScanDerived(target)
+	if err != nil {
+		t.Fatalf("ScanDerived() error: %v", err)
+	}
+	for i, final := range finalEntries {
+		update := updates[i+2].Entry
+		if update.Name != final.Name {
+			t.Fatalf("updates[%d].Entry.Name = %q, want %q", i+2, update.Name, final.Name)
+		}
+		if update.Size != final.Size {
+			t.Fatalf("updates[%d].Entry.Size = %d, want %d", i+2, update.Size, final.Size)
+		}
+		if !update.LastActivity.Equal(final.LastActivity) {
+			t.Fatalf("updates[%d].Entry.LastActivity = %v, want %v", i+2, update.LastActivity, final.LastActivity)
+		}
+	}
+}
+
 func TestFilterByAge(t *testing.T) {
 	cutoff := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
 	entries := []DerivedEntry{
