@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/faizmokh/nuke/internal"
+	"github.com/faizmokh/nuke/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -33,6 +34,7 @@ func init() {
 func runSimulators() error {
 	out := rootCmd.OutOrStdout()
 	in := rootCmd.InOrStdin()
+	interactive := isInteractiveTerminal(in, out)
 
 	devices, err := listUnavailableSimulators()
 	if err != nil {
@@ -44,18 +46,32 @@ func runSimulators() error {
 	}
 
 	count := len(devices)
-	fmt.Fprintln(out, "Unavailable simulators:")
-	for _, device := range devices {
-		fmt.Fprintf(out, "- %s (%s)\n", device.Name, device.Runtime)
+	if interactive {
+		lines := make([]string, 0, len(devices)+1)
+		for _, device := range devices {
+			lines = append(lines, fmt.Sprintf("%s (%s)", device.Name, device.Runtime))
+		}
+		lines = append(lines, fmt.Sprintf("%d unavailable %s", count, pluralize(count, "simulator", "simulators")))
+		fmt.Fprintln(out, tui.RenderSummaryCard("Unavailable Simulators", lines...))
+	} else {
+		fmt.Fprintln(out, "Unavailable simulators:")
+		for _, device := range devices {
+			fmt.Fprintf(out, "- %s (%s)\n", device.Name, device.Runtime)
+		}
+		fmt.Fprintf(out, "\n%d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
 	}
-	fmt.Fprintf(out, "\n%d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
 
 	if dryRunFlag {
 		return nil
 	}
 
 	if !yesFlag {
-		fmt.Fprintf(out, "Delete %d unavailable %s? [y/N] ", count, pluralize(count, "simulator", "simulators"))
+		prompt := fmt.Sprintf("Delete %d unavailable %s? [y/N]", count, pluralize(count, "simulator", "simulators"))
+		if interactive {
+			fmt.Fprintln(out, tui.RenderConfirmPrompt(prompt))
+		} else {
+			fmt.Fprintf(out, "%s ", prompt)
+		}
 		reader := bufio.NewReader(in)
 		response, _ := reader.ReadString('\n')
 		response = strings.TrimSpace(response)
@@ -68,7 +84,11 @@ func runSimulators() error {
 		return fmt.Errorf("deleting unavailable simulators: %w", err)
 	}
 
-	fmt.Fprintf(out, "Deleted %d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
+	if interactive {
+		fmt.Fprintln(out, tui.RenderSummaryCard("Cleanup Complete", fmt.Sprintf("Deleted %d unavailable %s", count, pluralize(count, "simulator", "simulators"))))
+	} else {
+		fmt.Fprintf(out, "Deleted %d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
+	}
 	return nil
 }
 
