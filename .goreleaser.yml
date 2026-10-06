@@ -22,18 +22,6 @@ archives:
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
 
-brews:
-  - name: nuke
-    repository:
-      owner: faizmokh
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/faizmokh/nuke"
-    description: "Clean up Xcode and iOS development caches"
-    test: |
-      system "#{bin}/nuke", "--version"
-
 checksum:
   name_template: "checksums.txt"
 
