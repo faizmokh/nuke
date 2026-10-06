@@ -2,41 +2,33 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
-	"strings"
 
 	"github.com/faizmokh/nuke/internal"
 	"github.com/faizmokh/nuke/internal/tui"
 	"github.com/spf13/cobra"
 )
 
-var listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
-	return internal.ListUnavailableSimulators(internal.RunSimctl)
+var listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
+	return internal.ListUnavailableSimulators(func(args ...string) ([]byte, error) { return internal.RunSimctlContext(ctx, args...) })
 }
 
-var deleteUnavailableSimulators = func() error {
-	return internal.DeleteUnavailableSimulators(internal.RunSimctl)
+var deleteUnavailableSimulators = func(ctx context.Context) error {
+	return internal.DeleteUnavailableSimulators(func(args ...string) ([]byte, error) { return internal.RunSimctlContext(ctx, args...) })
 }
 
-var simulatorsCmd = &cobra.Command{
-	Use:   "simulators",
-	Short: "Clean unavailable simulators",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSimulators()
-	},
+func newSimulatorsCommand() *cobra.Command {
+	return &cobra.Command{Use: "simulators", Short: "Clean unavailable simulators", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error { return runSimulators(cmd) }}
 }
 
-func init() {
-	bindFlags(simulatorsCmd)
-	rootCmd.AddCommand(simulatorsCmd)
-}
-
-func runSimulators() error {
-	out := rootCmd.OutOrStdout()
-	in := rootCmd.InOrStdin()
+func runSimulators(cmd *cobra.Command) error {
+	opts := commonOptions(cmd)
+	out := cmd.OutOrStdout()
+	in := cmd.InOrStdin()
 	interactive := isInteractiveTerminal(in, out)
 
-	devices, err := listUnavailableSimulators()
+	devices, err := listUnavailableSimulators(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("listing unavailable simulators: %w", err)
 	}
@@ -52,7 +44,7 @@ func runSimulators() error {
 			lines = append(lines, fmt.Sprintf("%s (%s)", device.Name, device.Runtime))
 		}
 		lines = append(lines, fmt.Sprintf("%d unavailable %s", count, pluralize(count, "simulator", "simulators")))
-		fmt.Fprintln(out, tui.RenderSummaryCard("Unavailable Simulators", lines...))
+		fmt.Fprintln(out, tui.RenderSummaryCardFor(out, "Unavailable Simulators", lines...))
 	} else {
 		fmt.Fprintln(out, "Unavailable simulators:")
 		for _, device := range devices {
@@ -61,31 +53,33 @@ func runSimulators() error {
 		fmt.Fprintf(out, "\n%d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
 	}
 
-	if dryRunFlag {
+	if opts.dryRun {
 		return nil
 	}
 
-	if !yesFlag {
+	if !opts.yes {
 		prompt := fmt.Sprintf("Delete %d unavailable %s? [y/N]", count, pluralize(count, "simulator", "simulators"))
-		if interactive {
-			fmt.Fprintln(out, tui.RenderConfirmPrompt(prompt))
-		} else {
-			fmt.Fprintf(out, "%s ", prompt)
+		input, closeInput, err := cancellableInput(cmd.Context(), in)
+		if err != nil {
+			return err
 		}
-		reader := bufio.NewReader(in)
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(response)
-		if response != "y" && response != "Y" && response != "yes" {
+		defer closeInput()
+		confirmed, err := confirmCleanup(bufio.NewReader(input), out, interactive, prompt)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
 			return nil
 		}
+
 	}
 
-	if err := deleteUnavailableSimulators(); err != nil {
+	if err := deleteUnavailableSimulators(cmd.Context()); err != nil {
 		return fmt.Errorf("deleting unavailable simulators: %w", err)
 	}
 
 	if interactive {
-		fmt.Fprintln(out, tui.RenderSummaryCard("Cleanup Complete", fmt.Sprintf("Deleted %d unavailable %s", count, pluralize(count, "simulator", "simulators"))))
+		fmt.Fprintln(out, tui.RenderSummaryCardFor(out, "Cleanup Complete", fmt.Sprintf("Deleted %d unavailable %s", count, pluralize(count, "simulator", "simulators"))))
 	} else {
 		fmt.Fprintf(out, "Deleted %d unavailable %s\n", count, pluralize(count, "simulator", "simulators"))
 	}

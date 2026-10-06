@@ -2,162 +2,56 @@ package cmd
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
-	"os"
-	"strings"
-
 	"github.com/faizmokh/nuke/internal"
-	"github.com/faizmokh/nuke/internal/tui"
 	"github.com/spf13/cobra"
+	"os"
 )
 
-var isInteractiveTerminal = tui.IsInteractiveTerminal
-var runDerivedPicker = tui.RunDerivedPicker
-
-var (
-	derivedAllFlag         bool
-	derivedProjectFlag     string
-	derivedOlderThanFlag   string
-	derivedListFlag        bool
-	derivedInteractiveFlag bool
-)
-
-var derivedCmd = &cobra.Command{
-	Use:   "derived",
-	Short: "Clean Xcode DerivedData",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDerived()
-	},
-}
-
-func init() {
-	bindFlags(derivedCmd)
-	derivedCmd.Flags().BoolVar(&derivedAllFlag, "all", false, "delete all DerivedData")
-	derivedCmd.Flags().StringVar(&derivedProjectFlag, "project", "", "delete entries matching project regex")
-	derivedCmd.Flags().StringVar(&derivedOlderThanFlag, "older-than", "", "delete entries older than threshold (for example 30d or 2025-01-01)")
-	derivedCmd.Flags().BoolVar(&derivedListFlag, "list", false, "list DerivedData entries without deleting")
-	derivedCmd.Flags().BoolVar(&derivedInteractiveFlag, "interactive", false, "choose DerivedData entries interactively")
-	rootCmd.AddCommand(derivedCmd)
-}
-
-func runDerived() error {
-	out := rootCmd.OutOrStdout()
-	in := rootCmd.InOrStdin()
-	reader := bufio.NewReader(in)
-	interactiveDefault := !yesFlag && !derivedAllFlag && !derivedInteractiveFlag && derivedProjectFlag == "" && derivedOlderThanFlag == ""
-	shouldUsePicker := isInteractiveTerminal(in, out) && !dryRunFlag && !derivedListFlag && !yesFlag && (derivedInteractiveFlag || interactiveDefault)
-	if shouldUsePicker {
-		entries, err := os.ReadDir(internal.ExpandHome(DerivedTarget.Path))
-		if err != nil {
-			return fmt.Errorf("scanning %s: %w", DerivedTarget.Name, err)
-		}
-		if len(entries) == 0 {
-			fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
-			return nil
-		}
-
-		selected, err := runDerivedPicker(out, in, DerivedTarget, derivedProjectFlag, derivedOlderThanFlag)
-		if err != nil {
-			if errors.Is(err, tui.ErrNoEntries) {
-				fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
-				return nil
+func newDerivedCommand() *cobra.Command {
+	var all, list, interactive, current, buildOnly bool
+	var project, olderThan string
+	cmd := &cobra.Command{Use: "derived", Short: "Clean Xcode DerivedData", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		scanOptions := internal.ScanOptions{Project: project, OlderThan: olderThan, Activity: true, BuildOnly: buildOnly}
+		if current {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
 			}
-			return err
+			selected, err := internal.FindCurrentProject(cwd)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Current project: %s\n", selected)
+			scanOptions.MatchEntry = internal.CurrentProjectMatcher(selected)
 		}
-		if len(selected) == 0 {
-			fmt.Fprintln(out, "No items selected.")
-			return nil
+		opts := commonOptions(cmd)
+		shouldSelect := !opts.yes && (interactive || (!all && !current && project == "" && olderThan == ""))
+		var selectEntries func(*bufio.Reader, internal.ScanPlan) (internal.ScanPlan, error)
+		if shouldSelect {
+			selectEntries = func(in *bufio.Reader, p internal.ScanPlan) (internal.ScanPlan, error) {
+				if _, count := p.Summary(); count == 0 {
+					return p.Select(nil), nil
+				}
+				selected, err := internal.InteractiveSelect(cmd.OutOrStdout(), in, p.Entries)
+				return p.Select(selected), err
+			}
 		}
-
-		bytes, items := internal.EntriesSummary(selected)
-		fmt.Fprintf(out, "%s: %s in %d items\n", DerivedTarget.Name, internal.HumanSize(bytes), items)
-		fmt.Fprintf(out, "Nuke %s? [y/N] ", internal.HumanSize(bytes))
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(response)
-		if response != "y" && response != "Y" && response != "yes" {
-			return nil
+		target := derivedTargetFor(cmd)
+		if buildOnly {
+			target.Name = "DerivedData build outputs"
+			fmt.Fprintln(cmd.OutOrStdout(), "Build-only: Products and Intermediates.noindex; indexes and package checkouts are preserved.")
 		}
-
-		bar := internal.NewProgressBar(out, items)
-		freed, err := internal.NukeEntries(selected, func(current, total int) {
-			bar.Update(current)
-		})
-		bar.Done()
-		if err != nil {
-			return err
-		}
-
-		fmt.Fprintf(out, "Nuked %s from %s\n", internal.HumanSize(freed), DerivedTarget.Name)
-		return nil
-	}
-
-	entries, err := internal.ScanDerived(DerivedTarget)
-	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
-		fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
-		return nil
-	}
-
-	if derivedProjectFlag != "" {
-		entries, err = internal.FilterByProject(entries, derivedProjectFlag)
-		if err != nil {
-			return err
-		}
-	}
-
-	if derivedOlderThanFlag != "" {
-		threshold, err := internal.ParseAgeThreshold(derivedOlderThanFlag)
-		if err != nil {
-			return err
-		}
-		entries = internal.FilterByAge(entries, threshold)
-	}
-
-	if len(entries) == 0 {
-		fmt.Fprintf(out, "%s: nothing to clean\n", DerivedTarget.Name)
-		return nil
-	}
-
-	if derivedInteractiveFlag || interactiveDefault {
-		entries, err = internal.InteractiveSelect(out, reader, entries)
-		if err != nil {
-			return err
-		}
-		if len(entries) == 0 {
-			fmt.Fprintln(out, "No items selected.")
-			return nil
-		}
-	}
-
-	bytes, items := internal.EntriesSummary(entries)
-	if derivedListFlag || dryRunFlag {
-		internal.FormatEntriesTable(out, entries)
-		fmt.Fprintf(out, "\n%s: %s in %d items\n", DerivedTarget.Name, internal.HumanSize(bytes), items)
-		return nil
-	}
-
-	fmt.Fprintf(out, "%s: %s in %d items\n", DerivedTarget.Name, internal.HumanSize(bytes), items)
-	if !yesFlag {
-		fmt.Fprintf(out, "Nuke %s? [y/N] ", internal.HumanSize(bytes))
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(response)
-		if response != "y" && response != "Y" && response != "yes" {
-			return nil
-		}
-	}
-
-	bar := internal.NewProgressBar(out, items)
-	freed, err := internal.NukeEntries(entries, func(current, total int) {
-		bar.Update(current)
-	})
-	bar.Done()
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(out, "Nuked %s from %s\n", internal.HumanSize(freed), DerivedTarget.Name)
-	return nil
+		return runCleanup(cmd, []internal.Target{target}, scanOptions, selectEntries, list)
+	}}
+	cmd.Flags().BoolVar(&all, "all", false, "skip entry selection; still ask for confirmation")
+	cmd.Flags().StringVar(&project, "project", "", "delete entries matching project regex")
+	cmd.Flags().StringVar(&olderThan, "older-than", "", "delete entries older than threshold (for example 30d or 2025-01-01)")
+	cmd.Flags().BoolVar(&list, "list", false, "list DerivedData entries without deleting")
+	cmd.Flags().BoolVar(&interactive, "select", false, "choose DerivedData entries after applying filters")
+	cmd.Flags().BoolVar(&current, "current", false, "only clean DerivedData belonging to the current workspace/project")
+	cmd.Flags().BoolVar(&buildOnly, "build-only", false, "remove only Build/Products and Build/Intermediates.noindex; preserve indexes and package checkouts")
+	cmd.MarkFlagsMutuallyExclusive("current", "project")
+	cmd.MarkFlagsMutuallyExclusive("current", "all")
+	return cmd
 }

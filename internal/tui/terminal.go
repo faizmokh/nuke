@@ -16,3 +16,12 @@ func IsInteractiveTerminal(in io.Reader, out io.Writer) bool {
 
 	return term.IsTerminal(int(inFile.Fd())) && term.IsTerminal(int(outFile.Fd()))
 }
+
+func terminalWidth(out io.Writer) int {
+	if file, ok := out.(*os.File); ok {
+		if width, _, err := term.GetSize(int(file.Fd())); err == nil && width > 0 {
+			return width
+		}
+	}
+	return 80
+}

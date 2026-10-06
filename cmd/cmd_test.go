@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/faizmokh/nuke/internal"
 	"github.com/faizmokh/nuke/internal/tui"
@@ -19,7 +21,6 @@ func executeCommand(root *cobra.Command, args ...string) (string, error) {
 }
 
 func executeCommandWithInput(root *cobra.Command, input string, args ...string) (string, error) {
-	resetCommandFlags()
 	buf := new(bytes.Buffer)
 	root.SetOut(buf)
 	root.SetErr(buf)
@@ -29,35 +30,8 @@ func executeCommandWithInput(root *cobra.Command, input string, args ...string) 
 	return buf.String(), err
 }
 
-func resetCommandFlags() {
-	yesFlag = false
-	dryRunFlag = false
-	derivedAllFlag = false
-	derivedProjectFlag = ""
-	derivedOlderThanFlag = ""
-	derivedListFlag = false
-	derivedInteractiveFlag = false
-	resetHelpFlag(rootCmd)
-	resetHelpFlag(derivedCmd)
-	resetHelpFlag(archivesCmd)
-	resetHelpFlag(deviceSupportCmd)
-	resetHelpFlag(moduleCacheCmd)
-	resetHelpFlag(simulatorsCmd)
-	resetHelpFlag(spmCmd)
-	resetHelpFlag(allCmd)
-}
-
-func resetHelpFlag(cmd *cobra.Command) {
-	flag := cmd.Flags().Lookup("help")
-	if flag == nil {
-		return
-	}
-	_ = flag.Value.Set("false")
-	flag.Changed = false
-}
-
 func TestRootCommand(t *testing.T) {
-	output, err := executeCommand(rootCmd, "--version")
+	output, err := executeCommand(NewRootCommand(), "--version")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,63 +41,63 @@ func TestRootCommand(t *testing.T) {
 }
 
 func TestDerivedCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"derived"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "derived"})
 	if err != nil {
 		t.Error("derived subcommand not registered")
 	}
 }
 
 func TestSPMCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"spm"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "spm"})
 	if err != nil {
 		t.Error("spm subcommand not registered")
 	}
 }
 
 func TestArchivesCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"archives"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "archives"})
 	if err != nil {
 		t.Error("archives subcommand not registered")
 	}
 }
 
 func TestDeviceSupportCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"device-support"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "device-support"})
 	if err != nil {
 		t.Error("device-support subcommand not registered")
 	}
 }
 
 func TestModuleCacheCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"module-cache"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "module-cache"})
 	if err != nil {
 		t.Error("module-cache subcommand not registered")
 	}
 }
 
 func TestSimulatorsCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"simulators"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "simulators"})
 	if err != nil {
 		t.Error("simulators subcommand not registered")
 	}
 }
 
 func TestAllCommandRegistered(t *testing.T) {
-	_, _, err := rootCmd.Find([]string{"all"})
+	_, _, err := NewRootCommand().Find([]string{"clean", "caches"})
 	if err != nil {
 		t.Error("all subcommand not registered")
 	}
 }
 
 func TestDerivedHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "derived", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "derived", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(output, "DerivedData") {
 		t.Errorf("help output = %q, want to contain 'DerivedData'", output)
 	}
-	for _, flag := range []string{"--all", "--project", "--older-than", "--list", "--interactive"} {
+	for _, flag := range []string{"--all", "--project", "--older-than", "--list", "--select"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help output = %q, want to contain %q", output, flag)
 		}
@@ -131,11 +105,11 @@ func TestDerivedHelp(t *testing.T) {
 }
 
 func TestRootHelpListsExpandedCleanupTargets(t *testing.T) {
-	output, err := executeCommand(rootCmd, "--help")
+	output, err := executeCommand(NewRootCommand(), "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, want := range []string{"archives", "device-support", "module-cache"} {
+	for _, want := range []string{"clean", "status", "doctor"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output = %q, want to contain %q", output, want)
 		}
@@ -166,7 +140,7 @@ func TestDerivedCommandInteractiveSelection(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	_, err := executeCommandWithInput(rootCmd, "1\ny\n", "derived")
+	_, err := executeCommandWithInput(NewRootCommand(), "1\ny\n", "clean", "derived")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +168,7 @@ func TestDerivedCommandListFlag(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	output, err := executeCommand(rootCmd, "derived", "--list")
+	output, err := executeCommand(NewRootCommand(), "clean", "derived", "--list")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -229,12 +203,12 @@ func TestDerivedCommandUsesPickerForInteractiveTerminal(t *testing.T) {
 	isInteractiveTerminal = func(in io.Reader, out io.Writer) bool {
 		return true
 	}
-	runDerivedPicker = func(out io.Writer, in io.Reader, target internal.Target, projectPattern string, olderThan string) ([]internal.DerivedEntry, error) {
+	runDerivedPicker = func(ctx context.Context, out io.Writer, in io.Reader, target internal.Target, options internal.ScanOptions) (internal.ScanPlan, error) {
 		pickerCalled = true
-		return nil, nil
+		return internal.ScanPlan{}, nil
 	}
 
-	_, err := executeCommand(rootCmd, "derived")
+	_, err := executeCommand(NewRootCommand(), "clean", "derived")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,12 +240,12 @@ func TestDerivedCommandListAndYesBypassPicker(t *testing.T) {
 	isInteractiveTerminal = func(in io.Reader, out io.Writer) bool {
 		return true
 	}
-	runDerivedPicker = func(out io.Writer, in io.Reader, target internal.Target, projectPattern string, olderThan string) ([]internal.DerivedEntry, error) {
+	runDerivedPicker = func(ctx context.Context, out io.Writer, in io.Reader, target internal.Target, options internal.ScanOptions) (internal.ScanPlan, error) {
 		pickerCalled = true
-		return nil, nil
+		return internal.ScanPlan{}, nil
 	}
 
-	if _, err := executeCommand(rootCmd, "derived", "--list"); err != nil {
+	if _, err := executeCommand(NewRootCommand(), "clean", "derived", "--list"); err != nil {
 		t.Fatalf("unexpected list error: %v", err)
 	}
 	if pickerCalled {
@@ -279,7 +253,7 @@ func TestDerivedCommandListAndYesBypassPicker(t *testing.T) {
 	}
 
 	pickerCalled = false
-	if _, err := executeCommand(rootCmd, "derived", "--yes"); err != nil {
+	if _, err := executeCommand(NewRootCommand(), "clean", "derived", "--yes"); err != nil {
 		t.Fatalf("unexpected yes error: %v", err)
 	}
 	if pickerCalled {
@@ -298,11 +272,11 @@ func TestDerivedCommandInteractiveNoMatchesShowsNothingToClean(t *testing.T) {
 	isInteractiveTerminal = func(in io.Reader, out io.Writer) bool {
 		return true
 	}
-	runDerivedPicker = func(out io.Writer, in io.Reader, target internal.Target, projectPattern string, olderThan string) ([]internal.DerivedEntry, error) {
-		return nil, tui.ErrNoEntries
+	runDerivedPicker = func(ctx context.Context, out io.Writer, in io.Reader, target internal.Target, options internal.ScanOptions) (internal.ScanPlan, error) {
+		return internal.ScanPlan{}, tui.ErrNoEntries
 	}
 
-	output, err := executeCommand(rootCmd, "derived", "--interactive")
+	output, err := executeCommand(NewRootCommand(), "clean", "derived", "--select")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +286,7 @@ func TestDerivedCommandInteractiveNoMatchesShowsNothingToClean(t *testing.T) {
 }
 
 func TestSPMHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "spm", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "spm", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -322,7 +296,7 @@ func TestSPMHelp(t *testing.T) {
 }
 
 func TestArchivesHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "archives", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "archives", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -332,7 +306,7 @@ func TestArchivesHelp(t *testing.T) {
 }
 
 func TestDeviceSupportHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "device-support", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "device-support", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -342,7 +316,7 @@ func TestDeviceSupportHelp(t *testing.T) {
 }
 
 func TestModuleCacheHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "module-cache", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "module-cache", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,7 +326,7 @@ func TestModuleCacheHelp(t *testing.T) {
 }
 
 func TestSimulatorsHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "simulators", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "simulators", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -381,7 +355,7 @@ func TestArchivesCommandSkipConfirm(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	_, err := executeCommand(rootCmd, "archives", "--yes")
+	_, err := executeCommand(NewRootCommand(), "clean", "archives", "--yes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,7 +389,7 @@ func TestArchivesCommandInteractiveDryRunUsesStyledSummary(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	output, err := executeCommand(rootCmd, "archives", "--dry-run")
+	output, err := executeCommand(NewRootCommand(), "clean", "archives", "--dry-run")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -442,7 +416,7 @@ func TestDeviceSupportCommandSkipConfirm(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	_, err := executeCommand(rootCmd, "device-support", "--yes")
+	_, err := executeCommand(NewRootCommand(), "clean", "device-support", "--yes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,7 +445,7 @@ func TestModuleCacheCommandSkipConfirm(t *testing.T) {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
-	_, err := executeCommand(rootCmd, "module-cache", "--yes")
+	_, err := executeCommand(NewRootCommand(), "clean", "module-cache", "--yes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,18 +468,18 @@ func TestSimulatorsCommandDryRun(t *testing.T) {
 	}()
 
 	deleteCalled := false
-	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+	listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
 		return []internal.SimulatorDevice{
 			{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"},
 			{Name: "iPad Pro", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-16-4", UDID: "DEF"},
 		}, nil
 	}
-	deleteUnavailableSimulators = func() error {
+	deleteUnavailableSimulators = func(ctx context.Context) error {
 		deleteCalled = true
 		return nil
 	}
 
-	output, err := executeCommand(rootCmd, "simulators", "--dry-run")
+	output, err := executeCommand(NewRootCommand(), "clean", "simulators", "--dry-run")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -533,15 +507,15 @@ func TestSimulatorsCommandSkipConfirm(t *testing.T) {
 	isInteractiveTerminal = func(in io.Reader, out io.Writer) bool {
 		return true
 	}
-	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+	listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
 		return []internal.SimulatorDevice{{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"}}, nil
 	}
-	deleteUnavailableSimulators = func() error {
+	deleteUnavailableSimulators = func(ctx context.Context) error {
 		deleteCalled = true
 		return nil
 	}
 
-	output, err := executeCommand(rootCmd, "simulators", "--yes")
+	output, err := executeCommand(NewRootCommand(), "clean", "simulators", "--yes")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -567,15 +541,15 @@ func TestSimulatorsCommandInteractiveDryRunUsesStyledSummary(t *testing.T) {
 	isInteractiveTerminal = func(in io.Reader, out io.Writer) bool {
 		return true
 	}
-	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+	listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
 		return []internal.SimulatorDevice{{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"}}, nil
 	}
-	deleteUnavailableSimulators = func() error {
+	deleteUnavailableSimulators = func(ctx context.Context) error {
 		deleteCalled = true
 		return nil
 	}
 
-	output, err := executeCommand(rootCmd, "simulators", "--dry-run")
+	output, err := executeCommand(NewRootCommand(), "clean", "simulators", "--dry-run")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -593,11 +567,11 @@ func TestSimulatorsCommandListError(t *testing.T) {
 		listUnavailableSimulators = originalList
 	}()
 
-	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+	listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
 		return nil, errors.New("simctl exploded")
 	}
 
-	_, err := executeCommand(rootCmd, "simulators")
+	_, err := executeCommand(NewRootCommand(), "clean", "simulators")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -614,14 +588,14 @@ func TestSimulatorsCommandDeleteError(t *testing.T) {
 		deleteUnavailableSimulators = originalDelete
 	}()
 
-	listUnavailableSimulators = func() ([]internal.SimulatorDevice, error) {
+	listUnavailableSimulators = func(ctx context.Context) ([]internal.SimulatorDevice, error) {
 		return []internal.SimulatorDevice{{Name: "iPhone 8", Runtime: "com.apple.CoreSimulator.SimRuntime.iOS-15-5", UDID: "ABC"}}, nil
 	}
-	deleteUnavailableSimulators = func() error {
+	deleteUnavailableSimulators = func(ctx context.Context) error {
 		return errors.New("permission denied")
 	}
 
-	_, err := executeCommand(rootCmd, "simulators", "--yes")
+	_, err := executeCommand(NewRootCommand(), "clean", "simulators", "--yes")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -631,7 +605,7 @@ func TestSimulatorsCommandDeleteError(t *testing.T) {
 }
 
 func TestAllHelp(t *testing.T) {
-	output, err := executeCommand(rootCmd, "all", "--help")
+	output, err := executeCommand(NewRootCommand(), "clean", "caches", "--help")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -672,13 +646,277 @@ func TestAllCommandInteractiveDryRunUsesStyledSummary(t *testing.T) {
 		t.Fatalf("WriteFile(spm) error: %v", err)
 	}
 
-	output, err := executeCommand(rootCmd, "all", "--dry-run")
+	output, err := executeCommand(NewRootCommand(), "clean", "caches", "--dry-run")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, want := range []string{"All Targets", "DerivedData", "SPM caches", "╭"} {
+	for _, want := range []string{"DerivedData and SwiftPM caches", "DerivedData", "SPM caches", "╭"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output = %q, want to contain %q", output, want)
 		}
 	}
+}
+
+type forbiddenInput struct{}
+
+func (forbiddenInput) Read([]byte) (int, error) { panic("read-only command attempted to read stdin") }
+
+func TestReadOnlyDerivedNeverReadsInput(t *testing.T) {
+	original := DerivedTarget
+	defer func() { DerivedTarget = original }()
+	DerivedTarget = internal.Target{Name: "DerivedData", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(DerivedTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"clean", "derived", "--list"}, {"clean", "derived", "--dry-run"}, {"clean", "derived", "--select", "--list"}, {"clean", "derived", "--select", "--dry-run"}} {
+		root := NewRootCommand()
+		var out bytes.Buffer
+		root.SetIn(forbiddenInput{})
+		root.SetOut(&out)
+		root.SetErr(&out)
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), "Delete which") || strings.Contains(out.String(), "[y/N]") {
+			t.Fatal(out.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(DerivedTarget.Path, "entry")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAllContinuesAndReturnsScanErrors(t *testing.T) {
+	derived, spm := DerivedTarget, SPMTarget
+	defer func() { DerivedTarget = derived; SPMTarget = spm }()
+	DerivedTarget = internal.Target{Name: "DerivedData", Path: filepath.Join(t.TempDir(), "missing")}
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeCommand(NewRootCommand(), "clean", "caches", "--yes")
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error=%v", err)
+	}
+	if !strings.Contains(out, "Nuked estimated") {
+		t.Fatal(out)
+	}
+	entries, err := os.ReadDir(SPMTarget.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("successful target was not cleaned")
+	}
+}
+
+func TestPlainCleanupHasNoTerminalControls(t *testing.T) {
+	original := SPMTarget
+	defer func() { SPMTarget = original }()
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeCommand(NewRootCommand(), "clean", "spm", "--yes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(out, "\r\x1b") {
+		t.Fatalf("terminal controls in output: %q", out)
+	}
+}
+
+func TestRootFlagsAreIndependentAndInherited(t *testing.T) {
+	original := SPMTarget
+	defer func() { SPMTarget = original }()
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	first := NewRootCommand()
+	var out bytes.Buffer
+	first.SetOut(&out)
+	first.SetIn(forbiddenInput{})
+	first.SetArgs([]string{"clean", "--dry-run", "spm"})
+	if err := first.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	second := NewRootCommand()
+	clean, _, err := second.Find([]string{"clean"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dry, _ := clean.PersistentFlags().GetBool("dry-run")
+	if dry {
+		t.Fatal("flag state leaked between roots")
+	}
+	// Prefix --yes must apply through inherited flags.
+	second.SetOut(&out)
+	second.SetIn(forbiddenInput{})
+	second.SetArgs([]string{"clean", "--yes", "spm"})
+	if err := second.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(SPMTarget.Path, "entry")); !os.IsNotExist(err) {
+		t.Fatal("prefix yes did not delete", err)
+	}
+}
+
+func TestCommandCancellationBeforeScan(t *testing.T) {
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetIn(forbiddenInput{})
+	root.SetArgs([]string{"clean", "caches", "--yes"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := root.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestConfirmationReadFailurePreventsDeletion(t *testing.T) {
+	original := SPMTarget
+	defer func() { SPMTarget = original }()
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetIn(errorInput{})
+	root.SetArgs([]string{"clean", "spm"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("read failure ignored")
+	}
+	if _, err := os.Stat(filepath.Join(SPMTarget.Path, "entry")); err != nil {
+		t.Fatal("deleted after failed confirmation", err)
+	}
+}
+
+type errorInput struct{}
+
+func (errorInput) Read([]byte) (int, error) { return 0, errors.New("input failed") }
+
+func TestCancellationInterruptsConfirmation(t *testing.T) {
+	original := SPMTarget
+	defer func() { SPMTarget = original }()
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "entry"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	root := NewRootCommand()
+	root.SetIn(reader)
+	root.SetOut(promptNotifier{ready})
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"clean", "spm"})
+	result := make(chan error, 1)
+	go func() { result <- root.ExecuteContext(ctx) }()
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("confirmation never appeared")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("confirmation read not canceled")
+	}
+	if _, err := os.Stat(filepath.Join(SPMTarget.Path, "entry")); err != nil {
+		t.Fatal("deleted after canceled confirmation", err)
+	}
+}
+
+type promptNotifier struct{ ready chan struct{} }
+
+func (w promptNotifier) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "[y/N]") {
+		select {
+		case w.ready <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+func TestAllPartialDeletionContinuesWithoutRescanning(t *testing.T) {
+	derived, spm := DerivedTarget, SPMTarget
+	defer func() { DerivedTarget = derived; SPMTarget = spm }()
+	DerivedTarget = internal.Target{Name: "DerivedData", Path: t.TempDir()}
+	SPMTarget = internal.Target{Name: "SPM caches", Path: t.TempDir()}
+	for _, name := range []string{"A", "B"} {
+		path := filepath.Join(DerivedTarget.Path, name)
+		if err := os.Mkdir(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "file"), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(SPMTarget.Path, "cache"), []byte("cache"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root := NewRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"clean", "caches"})
+	root.SetIn(&confirmationMutation{mutate: func() {
+		path := filepath.Join(DerivedTarget.Path, "B")
+		if err := os.Rename(path, path+"-unconfirmed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "changed since scan") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(DerivedTarget.Path, "A")); !os.IsNotExist(err) {
+		t.Fatal("valid entry was not cleaned", err)
+	}
+	for _, name := range []string{"B", "B-unconfirmed"} {
+		if _, err := os.Stat(filepath.Join(DerivedTarget.Path, name)); err != nil {
+			t.Fatal("replacement or unconfirmed sibling removed", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(SPMTarget.Path, "cache")); !os.IsNotExist(err) {
+		t.Fatal("independent target was not cleaned", err)
+	}
+	if !strings.Contains(out.String(), "Nuked estimated 1 B from DerivedData") {
+		t.Fatal(out.String())
+	}
+}
+
+type confirmationMutation struct {
+	mutate func()
+	read   bool
+}
+
+func (r *confirmationMutation) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	r.mutate()
+	return copy(p, "y\n"), nil
 }

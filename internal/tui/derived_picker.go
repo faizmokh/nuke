@@ -1,91 +1,60 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/faizmokh/nuke/internal"
 )
 
 type scanFinishedMsg struct {
-	err error
+	plan internal.ScanPlan
+	err  error
 }
 
 var ErrNoEntries = errors.New("no derived entries matched the interactive selection")
 
-func RunDerivedPicker(out io.Writer, in io.Reader, target internal.Target, projectPattern string, olderThan string) ([]internal.DerivedEntry, error) {
+func RunDerivedPickerContext(ctx context.Context, out io.Writer, in io.Reader, target internal.Target, options internal.ScanOptions) (internal.ScanPlan, error) {
+	return runDerivedPicker(ctx, out, in, target, options, internal.ScanTarget)
+}
+
+func runDerivedPicker(ctx context.Context, out io.Writer, in io.Reader, target internal.Target, options internal.ScanOptions, scan func(context.Context, internal.Target, internal.ScanOptions, func(internal.ScanUpdate)) (internal.ScanPlan, error)) (internal.ScanPlan, error) {
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	model := NewDerivedModel(target)
-
-	threshold, err := parseThreshold(olderThan)
-	if err != nil {
-		return nil, err
-	}
-
-	matcher, err := buildProjectMatcher(projectPattern)
-	if err != nil {
-		return nil, err
-	}
-
-	program := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out))
+	program := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out), tea.WithContext(ctx), tea.WithFPS(10))
+	done := make(chan struct{})
 	go func() {
-		err := internal.ScanDerivedProgressively(target, func(update internal.DerivedScanUpdate) {
-			if !matcher(update.Entry.Name) {
-				return
-			}
-			if threshold != nil && update.Complete && !update.Entry.LastActivity.Before(*threshold) {
-				return
-			}
-			if threshold != nil && !update.Complete {
-				return
-			}
-			program.Send(update)
-		})
-		program.Send(scanFinishedMsg{err: err})
+		defer close(done)
+		plan, err := scan(scanCtx, target, options, func(u internal.ScanUpdate) { program.Send(u) })
+		program.Send(scanFinishedMsg{plan: plan, err: err})
 	}()
-
-	finalModel, err := program.Run()
-	if err != nil {
-		return nil, err
+	final, err := program.Run()
+	cancel()
+	<-done // Don't leave a scan running after the UI exits.
+	if ctx.Err() != nil {
+		return internal.ScanPlan{}, ctx.Err()
 	}
-
-	derivedModel, ok := finalModel.(*DerivedModel)
+	if err != nil {
+		return internal.ScanPlan{}, err
+	}
+	m, ok := final.(*DerivedModel)
 	if !ok {
-		return nil, fmt.Errorf("unexpected derived picker model type %T", finalModel)
+		return internal.ScanPlan{}, fmt.Errorf("unexpected derived picker model type %T", final)
 	}
-	if derivedModel.scanErr != nil {
-		return nil, derivedModel.scanErr
+	if m.cancelled {
+		return internal.ScanPlan{}, nil
 	}
-	if derivedModel.scanFinished && !derivedModel.cancelled && len(derivedModel.rows) == 0 {
-		return nil, ErrNoEntries
+	if m.scanFinished && len(m.rows) == 0 && m.scanErr == nil {
+		return m.plan, ErrNoEntries
 	}
-
-	return derivedModel.Selection(), nil
+	return m.plan.Select(m.Selection()), m.scanErr
 }
 
-func buildProjectMatcher(projectPattern string) (func(string) bool, error) {
-	if projectPattern == "" {
-		return func(string) bool { return true }, nil
-	}
-
-	re, err := regexp.Compile(projectPattern)
-	if err != nil {
-		return nil, fmt.Errorf("invalid project pattern: %w", err)
-	}
-	return re.MatchString, nil
-}
-
-func parseThreshold(olderThan string) (*time.Time, error) {
-	if olderThan == "" {
-		return nil, nil
-	}
-
-	threshold, err := internal.ParseAgeThreshold(olderThan)
-	if err != nil {
-		return nil, err
-	}
-	return &threshold, nil
+func RunDerivedPicker(out io.Writer, in io.Reader, target internal.Target, projectPattern, olderThan string) ([]internal.DerivedEntry, error) {
+	plan, err := RunDerivedPickerContext(context.Background(), out, in, target, internal.ScanOptions{Project: projectPattern, OlderThan: olderThan, Activity: true})
+	return plan.Entries, err
 }

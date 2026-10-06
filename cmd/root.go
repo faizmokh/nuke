@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"strings"
+	"os"
+	"os/signal"
+	"path/filepath"
 
 	"github.com/faizmokh/nuke/internal"
 	"github.com/faizmokh/nuke/internal/tui"
@@ -10,205 +13,104 @@ import (
 )
 
 var Version = "dev"
+var DerivedTarget = internal.Target{Name: "DerivedData", Path: "~/Library/Developer/Xcode/DerivedData"}
+var SPMTarget = internal.Target{Name: "SPM caches", Path: "~/Library/Caches/org.swift.swiftpm"}
+var ArchivesTarget = internal.Target{Name: "Xcode Archives", Path: "~/Library/Developer/Xcode/Archives"}
+var DeviceSupportTarget = internal.Target{Name: "iOS DeviceSupport", Path: "~/Library/Developer/Xcode/iOS DeviceSupport"}
+var ModuleCacheTarget = internal.Target{Name: "Xcode module cache", Path: "~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex"}
+var isInteractiveTerminal = tui.IsInteractiveTerminal
+var runDerivedPicker = tui.RunDerivedPickerContext
 
-var (
-	yesFlag    bool
-	dryRunFlag bool
-)
-
-var DerivedTarget = internal.Target{
-	Name: "DerivedData",
-	Path: "~/Library/Developer/Xcode/DerivedData",
+// NewRootCommand creates independent commands and flag state for each invocation.
+func NewRootCommand() *cobra.Command {
+	root := &cobra.Command{Use: "nuke", Short: "Clean up Xcode and iOS development caches and prepare Swift package dependencies", Version: Version, SilenceUsage: true, SilenceErrors: true}
+	root.Example = "  nuke clean                       # Choose a cleanup target\n  nuke clean derived --current     # Clean the current project\n  nuke clean caches --dry-run       # Preview DerivedData and SwiftPM\n  nuke spm download                # Prepare project dependencies\n  nuke status\n  nuke doctor"
+	root.RunE = func(cmd *cobra.Command, args []string) error { return cmd.Help() }
+	root.Args = cobra.NoArgs
+	clean := newCleanCommand()
+	root.AddCommand(clean, newStatusCommand(), newDoctorCommand(), newSPMCommand())
+	root.PersistentFlags().String("derived-data", "", "use a custom DerivedData root directory")
+	clean.AddCommand(newDerivedCommand(), newSimulatorsCommand())
+	for _, spec := range []struct {
+		name, help string
+		target     *internal.Target
+	}{
+		{"spm", "Clean Swift Package Manager caches", &SPMTarget},
+		{"archives", "Clean Xcode Archives", &ArchivesTarget},
+		{"device-support", "Clean iOS DeviceSupport", &DeviceSupportTarget},
+		{"module-cache", "Clean the Xcode module cache", &ModuleCacheTarget},
+	} {
+		targetCommand := &cobra.Command{Use: spec.name, Short: spec.help, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+			target := *spec.target
+			if spec.name == "module-cache" && cmd.Flags().Changed("derived-data") {
+				target.Path = filepath.Join(derivedTargetFor(cmd).Path, "ModuleCache.noindex")
+			}
+			return runCleanup(cmd, []internal.Target{target}, internal.ScanOptions{}, nil, false)
+		}}
+		if spec.name == "archives" {
+			targetCommand.Flags().Bool("trash", false, "move archives to Trash for recovery; space is reclaimed only after emptying Trash")
+		}
+		clean.AddCommand(targetCommand)
+	}
+	clean.AddCommand(&cobra.Command{Use: "caches", Short: "Clean DerivedData and SPM caches", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		return runCleanup(cmd, []internal.Target{derivedTargetFor(cmd), SPMTarget}, internal.ScanOptions{}, nil, false)
+	}})
+	return root
 }
 
-var SPMTarget = internal.Target{
-	Name: "SPM caches",
-	Path: "~/Library/Caches/org.swift.swiftpm",
-}
+var runTargetMenu = tui.RunTargetMenu
 
-var ArchivesTarget = internal.Target{
-	Name: "Xcode Archives",
-	Path: "~/Library/Developer/Xcode/Archives",
-}
-
-var DeviceSupportTarget = internal.Target{
-	Name: "iOS DeviceSupport",
-	Path: "~/Library/Developer/Xcode/iOS DeviceSupport",
-}
-
-var ModuleCacheTarget = internal.Target{
-	Name: "Xcode module cache",
-	Path: "~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex",
-}
-
-var rootCmd = &cobra.Command{
-	Use:     "nuke",
-	Short:   "Clean up Xcode and iOS development caches",
-	Version: Version,
+func newCleanCommand() *cobra.Command {
+	clean := &cobra.Command{Use: "clean [target]", Short: "Clean caches or choose a cleanup target", Args: cobra.NoArgs}
+	clean.PersistentFlags().BoolP("yes", "y", false, "skip entry selection and confirmation")
+	clean.PersistentFlags().Bool("dry-run", false, "preview without selecting or deleting")
+	clean.RunE = func(cmd *cobra.Command, args []string) error {
+		opts := commonOptions(cmd)
+		if opts.yes || opts.dryRun || !isInteractiveTerminal(cmd.InOrStdin(), cmd.OutOrStdout()) {
+			return fmt.Errorf("choose an explicit cleanup target, for example: nuke clean derived or nuke clean caches --dry-run (see nuke clean --help)")
+		}
+		choices := []tui.TargetChoice{
+			{Name: "derived", Label: "DerivedData", Description: "Choose Xcode project caches"},
+			{Name: "caches", Label: "Common caches", Description: "All DerivedData and SwiftPM caches"},
+			{Name: "spm", Label: "SwiftPM", Description: "Swift Package Manager caches"},
+			{Name: "archives", Label: "Archives", Description: "Xcode build archives"},
+			{Name: "device-support", Label: "Device support", Description: "Cached iOS device support files"},
+			{Name: "module-cache", Label: "Module cache", Description: "Compiled Xcode modules"},
+			{Name: "simulators", Label: "Unavailable simulators", Description: "Only unavailable CoreSimulator devices"},
+		}
+		name, err := runTargetMenu(cmd.Context(), cmd.OutOrStdout(), cmd.InOrStdin(), choices)
+		if err != nil || name == "" {
+			return err
+		}
+		target, _, err := cmd.Find([]string{name})
+		if err != nil {
+			return err
+		}
+		if target == cmd || target.RunE == nil {
+			return fmt.Errorf("unknown cleanup target %q", name)
+		}
+		// Cobra normally assigns context when executing a child command.
+		target.SetContext(cmd.Context())
+		// Initialize inherited flags before directly invoking the same handler.
+		if err := target.ParseFlags(nil); err != nil {
+			return err
+		}
+		return target.RunE(target, nil)
+	}
+	return clean
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return NewRootCommand().ExecuteContext(ctx)
 }
 
-func init() {
-	rootCmd.PersistentFlags().BoolVarP(&yesFlag, "yes", "y", false, "skip confirmation prompt")
-	rootCmd.PersistentFlags().BoolVar(&dryRunFlag, "dry-run", false, "show what would be deleted without deleting")
-}
-
-func bindFlags(cmd *cobra.Command) {
-	cmd.Flags().BoolVarP(&yesFlag, "yes", "y", false, "skip confirmation prompt")
-	cmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "show what would be deleted without deleting")
-}
-
-func runTarget(target internal.Target) error {
-	out := rootCmd.OutOrStdout()
-	in := rootCmd.InOrStdin()
-	interactive := isInteractiveTerminal(in, out)
-
-	bytes, items, err := internal.Scan(target)
-	if err != nil {
-		return err
+func derivedTargetFor(cmd *cobra.Command) internal.Target {
+	target := DerivedTarget
+	path, _ := cmd.Flags().GetString("derived-data")
+	if path != "" {
+		target.Path = internal.ExpandHome(path)
 	}
-	if items == 0 {
-		fmt.Fprintf(out, "%s: nothing to clean\n", target.Name)
-		return nil
-	}
-
-	if interactive {
-		fmt.Fprintln(out, tui.RenderSummaryCard(target.Name, fmt.Sprintf("Reclaimable: %s", internal.HumanSize(bytes)), fmt.Sprintf("Items: %d", items)))
-	} else {
-		fmt.Fprintf(out, "%s: %s in %d items\n", target.Name, internal.HumanSize(bytes), items)
-	}
-
-	if dryRunFlag {
-		return nil
-	}
-
-	if !yesFlag {
-		confirmed, err := confirmCleanup(in, out, interactive, fmt.Sprintf("Nuke %s? [y/N]", internal.HumanSize(bytes)))
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			return nil
-		}
-	}
-
-	progressBar := newProgressBar(out, interactive, target.Name, items)
-	freed, err := internal.Nuke(target, func(current, total int) {
-		progressBar.Update(current)
-	})
-	progressBar.Done()
-	if err != nil {
-		return err
-	}
-
-	if interactive {
-		fmt.Fprintln(out, tui.RenderSummaryCard("Cleanup Complete", fmt.Sprintf("Target: %s", target.Name), fmt.Sprintf("Freed: %s", internal.HumanSize(freed))))
-	} else {
-		fmt.Fprintf(out, "Nuked %s from %s\n", internal.HumanSize(freed), target.Name)
-	}
-
-	return nil
-}
-
-func runAll() error {
-	out := rootCmd.OutOrStdout()
-	in := rootCmd.InOrStdin()
-	interactive := isInteractiveTerminal(in, out)
-	targets := []internal.Target{DerivedTarget, SPMTarget}
-	any := false
-	lines := make([]string, 0, len(targets))
-
-	for _, t := range targets {
-		bytes, items, err := internal.Scan(t)
-		if err != nil {
-			fmt.Fprintf(out, "%s: %v\n", t.Name, err)
-			continue
-		}
-		if items > 0 {
-			if interactive {
-				lines = append(lines, fmt.Sprintf("%s: %s in %d items", t.Name, internal.HumanSize(bytes), items))
-			} else {
-				fmt.Fprintf(out, "%s: %s in %d items\n", t.Name, internal.HumanSize(bytes), items)
-			}
-			any = true
-		}
-	}
-
-	if !any {
-		fmt.Fprintln(out, "Nothing to clean.")
-		return nil
-	}
-	if interactive {
-		fmt.Fprintln(out, tui.RenderSummaryCard("All Targets", lines...))
-	}
-
-	if dryRunFlag {
-		return nil
-	}
-
-	if !yesFlag {
-		confirmed, err := confirmCleanup(in, out, interactive, "Nuke all? [y/N]")
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			return nil
-		}
-	}
-
-	for _, t := range targets {
-		_, items, err := internal.Scan(t)
-		if err != nil {
-			fmt.Fprintf(out, "%s: %v\n", t.Name, err)
-			continue
-		}
-
-		bar := newProgressBar(out, interactive, t.Name, items)
-		freed, err := internal.Nuke(t, func(current, total int) {
-			bar.Update(current)
-		})
-		bar.Done()
-		if err != nil {
-			fmt.Fprintf(out, "%s: %v\n", t.Name, err)
-			continue
-		}
-		if freed > 0 {
-			if interactive {
-				fmt.Fprintln(out, tui.RenderSummaryCard("Cleanup Complete", fmt.Sprintf("Target: %s", t.Name), fmt.Sprintf("Freed: %s", internal.HumanSize(freed))))
-			} else {
-				fmt.Fprintf(out, "Nuked %s from %s\n", internal.HumanSize(freed), t.Name)
-			}
-		}
-	}
-
-	return nil
-}
-
-type progressBar interface {
-	Update(current int)
-	Done()
-}
-
-func newProgressBar(out interface{ Write([]byte) (int, error) }, interactive bool, label string, total int) progressBar {
-	if interactive {
-		return tui.NewInlineProgress(out, label, total)
-	}
-	return internal.NewProgressBar(out, total)
-}
-
-func confirmCleanup(in interface{ Read([]byte) (int, error) }, out interface{ Write([]byte) (int, error) }, interactive bool, prompt string) (bool, error) {
-	var response string
-	if interactive {
-		fmt.Fprintln(out, tui.RenderConfirmPrompt(prompt))
-	} else {
-		fmt.Fprintf(out, "%s ", prompt)
-	}
-	_, err := fmt.Fscanln(in, &response)
-	if err != nil && !strings.Contains(err.Error(), "EOF") {
-		return false, err
-	}
-	return response == "y" || response == "Y" || response == "yes", nil
+	return target
 }

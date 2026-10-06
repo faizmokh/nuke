@@ -2,22 +2,27 @@ package internal
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type DerivedEntry struct {
-	Name         string
-	Path         string
-	Size         int64
-	LastActivity time.Time
+	Name          string
+	Path          string
+	Size          int64
+	LastActivity  time.Time
+	Err           error
+	identity      os.FileInfo
+	buildOnly     bool
+	buildIdentity os.FileInfo
+	buildParts    []buildPart
 }
 
 type DerivedScanUpdate struct {
@@ -29,100 +34,24 @@ type DerivedScanUpdate struct {
 }
 
 func ScanDerived(target Target) ([]DerivedEntry, error) {
-	var entries []DerivedEntry
-	err := ScanDerivedProgressively(target, func(update DerivedScanUpdate) {
-		if !update.Complete {
-			return
-		}
-		entries = append(entries, update.Entry)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
+	plan, err := ScanTarget(context.Background(), target, ScanOptions{Activity: true, Workers: 1}, nil)
+	return plan.Entries, err
 }
 
+// Compatibility adapter. New callers use ScanTarget and path-keyed ScanUpdate.
 func ScanDerivedProgressively(target Target, onUpdate func(DerivedScanUpdate)) error {
-	path := ExpandHome(target.Path)
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return fmt.Errorf("scanning %s: %w", target.Name, err)
-	}
-
-	derived := make([]DerivedEntry, 0, len(entries))
-	for _, entry := range entries {
-		entryPath := filepath.Join(path, entry.Name())
-
-		item := DerivedEntry{
-			Name: entry.Name(),
-			Path: entryPath,
+	indexes := map[string]int{}
+	_, err := ScanTarget(context.Background(), target, ScanOptions{Activity: true, Workers: 1}, func(u ScanUpdate) {
+		index, ok := indexes[u.Entry.Path]
+		if !ok {
+			index = len(indexes)
+			indexes[u.Entry.Path] = index
 		}
-		derived = append(derived, item)
-	}
-
-	sort.Slice(derived, func(i, j int) bool {
-		return derived[i].Name < derived[j].Name
-	})
-
-	for i, item := range derived {
 		if onUpdate != nil {
-			onUpdate(DerivedScanUpdate{Index: i, Entry: item, Total: len(derived)})
+			onUpdate(DerivedScanUpdate{Index: index, Entry: u.Entry, Done: u.Done, Total: u.Total, Complete: u.Complete})
 		}
-	}
-
-	for i := range derived {
-		entry := derived[i]
-		info, err := os.Stat(entry.Path)
-		if err != nil {
-			continue
-		}
-
-		if info.IsDir() {
-			size, latest, err := dirStats(entry.Path)
-			if err != nil {
-				continue
-			}
-			entry.Size = size
-			entry.LastActivity = latest
-		} else {
-			entry.Size = info.Size()
-			entry.LastActivity = info.ModTime()
-		}
-
-		derived[i] = entry
-		if onUpdate != nil {
-			onUpdate(DerivedScanUpdate{Index: i, Entry: entry, Done: i + 1, Total: len(derived), Complete: true})
-		}
-	}
-
-	return nil
-}
-
-func dirStats(path string) (int64, time.Time, error) {
-	var size int64
-	var latest time.Time
-	var sawFile bool
-	rootInfo, err := os.Stat(path)
-	if err != nil {
-		return 0, time.Time{}, err
-	}
-	err = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			sawFile = true
-			if info.ModTime().After(latest) {
-				latest = info.ModTime()
-			}
-			size += info.Size()
-		}
-		return nil
 	})
-	if !sawFile {
-		latest = rootInfo.ModTime()
-	}
-	return size, latest, err
+	return err
 }
 
 func FilterByAge(entries []DerivedEntry, threshold time.Time) []DerivedEntry {
@@ -160,7 +89,7 @@ func ParseAgeThreshold(s string) (time.Time, error) {
 	}
 
 	amount, err := strconv.Atoi(s[:len(s)-1])
-	if err != nil {
+	if err != nil || amount <= 0 || amount > 100000 {
 		return time.Time{}, fmt.Errorf("invalid age threshold %q", s)
 	}
 
@@ -169,6 +98,9 @@ func ParseAgeThreshold(s string) (time.Time, error) {
 	case 'd':
 		return now.Add(-time.Duration(amount) * 24 * time.Hour), nil
 	case 'w':
+		if amount > int((1<<63-1)/(7*24*time.Hour)) {
+			return time.Time{}, fmt.Errorf("invalid age threshold %q", s)
+		}
 		return now.Add(-time.Duration(amount) * 7 * 24 * time.Hour), nil
 	case 'm':
 		return now.AddDate(0, -amount, 0), nil
@@ -180,11 +112,22 @@ func ParseAgeThreshold(s string) (time.Time, error) {
 func FormatEntriesTable(w io.Writer, entries []DerivedEntry) {
 	fmt.Fprintln(w, "#  Project                  Size      Last Activity")
 	for i, entry := range entries {
+		if entry.Err != nil {
+			fmt.Fprintf(w, "%2d  %s  unavailable: %v\n", i+1, entry.Name, entry.Err)
+			continue
+		}
 		fmt.Fprintf(w, "%2d  %-24s %-9s %s\n", i+1, entry.Name, HumanSize(entry.Size), entry.LastActivity.Format("2006-01-02"))
 	}
 }
 
 func InteractiveSelect(w io.Writer, r io.Reader, entries []DerivedEntry) ([]DerivedEntry, error) {
+	valid := make([]DerivedEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Err == nil {
+			valid = append(valid, e)
+		}
+	}
+	entries = valid
 	FormatEntriesTable(w, entries)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "a  Select all")
@@ -227,17 +170,16 @@ func InteractiveSelect(w io.Writer, r io.Reader, entries []DerivedEntry) ([]Deri
 }
 
 func NukeEntries(entries []DerivedEntry, onProgress func(current, total int)) (int64, error) {
-	var freed int64
-	for i, entry := range entries {
-		freed += entry.Size
-		if err := os.RemoveAll(entry.Path); err != nil {
-			return freed, err
-		}
-		if onProgress != nil {
-			onProgress(i+1, len(entries))
-		}
+	if len(entries) == 0 {
+		return 0, nil
 	}
-	return freed, nil
+	root := filepath.Dir(entries[0].Path)
+	info, err := os.Stat(root)
+	if err != nil {
+		return 0, err
+	}
+	result, err := DeletePlan(context.Background(), ScanPlan{Target: Target{Path: root}, Entries: entries, rootPath: root, rootInfo: info}, onProgress)
+	return result.Bytes, err
 }
 
 func EntriesSummary(entries []DerivedEntry) (int64, int) {

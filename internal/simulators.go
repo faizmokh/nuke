@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -16,10 +17,17 @@ type SimulatorDevice struct {
 type SimctlRunner func(args ...string) ([]byte, error)
 
 func RunSimctl(args ...string) ([]byte, error) {
-	cmd := exec.Command("xcrun", append([]string{"simctl"}, args...)...)
+	return RunSimctlContext(context.Background(), args...)
+}
+
+func RunSimctlContext(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "xcrun", append([]string{"simctl"}, args...)...)
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("running xcrun simctl: %w", ctx.Err())
+	}
 	if err != nil {
-		return nil, fmt.Errorf("running xcrun simctl %v: %w", args, err)
+		return nil, fmt.Errorf("running xcrun simctl %v: %w (%s)", args, err, output)
 	}
 	return output, nil
 }

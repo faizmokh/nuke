@@ -1,10 +1,14 @@
 package internal
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestListUnavailableSimulators(t *testing.T) {
@@ -99,5 +103,18 @@ func TestDeleteUnavailableSimulatorsRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "deleting unavailable simulators") {
 		t.Fatalf("error = %q, want delete context", err)
+	}
+}
+
+func TestRunSimctlContextCancellation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "xcrun"), []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := RunSimctlContext(ctx, "list", "devices"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v", err)
 	}
 }
